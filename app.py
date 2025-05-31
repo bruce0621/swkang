@@ -1,93 +1,135 @@
 import streamlit as st
-import google.generativeai as genai
-from dotenv import load_dotenv
-import os
+import sqlite3
+from datetime import datetime
+import pandas as pd
 
-# API 키 불러오기
-try:
-    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-    if not GOOGLE_API_KEY:
-        st.error("API 키가 설정되지 않았습니다. .streamlit/secrets.toml 파일에 GOOGLE_API_KEY를 설정해주세요.")
-        st.stop()
-except Exception as e:
-    st.error("API 키를 불러오는 중 오류가 발생했습니다. .streamlit/secrets.toml 파일이 올바르게 설정되어 있는지 확인해주세요.")
-    st.stop()
+# 데이터베이스 초기화
+def init_db():
+    conn = sqlite3.connect('board.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            author TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# Gemini 모델 초기화
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
+# 데이터베이스 연결
+def get_db_connection():
+    conn = sqlite3.connect('board.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    for m in genai.list_models():
-        print(m.name, m.supported_generation_methods)
-
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception as e:
-    st.error("Gemini 모델 초기화 중 오류가 발생했습니다. API 키가 올바른지 확인해주세요.")
-    st.stop()
-
-# 세션 상태 초기화
-if "chat" not in st.session_state:
-    st.session_state.chat = model.start_chat()
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-# Set page config
+# 페이지 설정
 st.set_page_config(
-    page_title="승우네 챗봇",
-    page_icon="🤖",
+    page_title="게시판",
+    page_icon="📝",
     layout="centered"
 )
 
-# Add custom CSS
-st.markdown("""
-<style>
-    .stTextInput>div>div>input {
-        background-color: #f0f2f6;
-    }
-    .stButton>button {
-        width: 100%;
-    }
-</style>
-""", unsafe_allow_html=True)
+# 데이터베이스 초기화
+init_db()
 
-# Title
-st.title("승우네 챗봇")
-st.markdown("승우네 API를 활용한 기본 챗봇 프레임워크입니다.")
+# 사이드바 - 메뉴 선택
+st.sidebar.title("메뉴")
+menu = st.sidebar.radio(
+    "선택하세요",
+    ["글 목록", "글 작성", "글 수정/삭제"]
+)
 
-# 이전 대화 내용 표시
-with st.expander("이전 대화 보기", expanded=False):
-    if not st.session_state.chat_history:
-        st.info("아직 대화 내용이 없습니다.")
+# 글 목록 보기
+if menu == "글 목록":
+    st.title("게시글 목록")
+    
+    conn = get_db_connection()
+    posts = conn.execute('SELECT * FROM posts ORDER BY created_at DESC').fetchall()
+    conn.close()
+    
+    if not posts:
+        st.info("등록된 게시글이 없습니다.")
     else:
-        for i, message in enumerate(st.session_state.chat_history):
-            if message["role"] == "user":
-                st.markdown(f"**사용자 {i//2 + 1}**: {message['content']}")
+        for post in posts:
+            with st.expander(f"{post['title']} - {post['author']} ({post['created_at']})"):
+                st.write(f"내용: {post['content']}")
+                st.write(f"작성일: {post['created_at']}")
+
+# 글 작성
+elif menu == "글 작성":
+    st.title("게시글 작성")
+    
+    with st.form("write_form"):
+        title = st.text_input("제목")
+        content = st.text_area("내용")
+        author = st.text_input("작성자")
+        submit = st.form_submit_button("작성")
+        
+        if submit:
+            if not title or not content or not author:
+                st.error("모든 필드를 입력해주세요.")
             else:
-                st.markdown(f"**Gemini {i//2 + 1}**: {message['content']}")
-            st.divider()
+                conn = get_db_connection()
+                conn.execute(
+                    'INSERT INTO posts (title, content, author, created_at) VALUES (?, ?, ?, ?)',
+                    (title, content, author, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                )
+                conn.commit()
+                conn.close()
+                st.success("게시글이 작성되었습니다.")
+                st.rerun()
 
-# Display chat messages
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Chat input
-user_input = st.chat_input("메시지를 입력하세요...")
-
-# 입력된 메시지가 있을 경우 처리
-if user_input:
-    # Add user message to chat history
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
+# 글 수정/삭제
+else:
+    st.title("게시글 수정/삭제")
     
-    # Display user message
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    conn = get_db_connection()
+    posts = conn.execute('SELECT * FROM posts ORDER BY created_at DESC').fetchall()
+    conn.close()
     
-    # Get AI response
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = st.session_state.chat.send_message(user_input)
-            st.markdown(response.text)
-    
-    # Add assistant response to chat history
-    st.session_state.chat_history.append({"role": "assistant", "content": response.text}) 
+    if not posts:
+        st.info("수정/삭제할 게시글이 없습니다.")
+    else:
+        # 게시글 선택
+        post_titles = [f"{post['title']} - {post['author']} ({post['created_at']})" for post in posts]
+        selected_post = st.selectbox("수정/삭제할 게시글을 선택하세요", post_titles)
+        
+        if selected_post:
+            # 선택된 게시글 정보 가져오기
+            selected_index = post_titles.index(selected_post)
+            selected_post_data = posts[selected_index]
+            
+            # 수정 폼
+            with st.form("edit_form"):
+                st.write("### 게시글 수정")
+                new_title = st.text_input("제목", value=selected_post_data['title'])
+                new_content = st.text_area("내용", value=selected_post_data['content'])
+                new_author = st.text_input("작성자", value=selected_post_data['author'])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.form_submit_button("수정"):
+                        if not new_title or not new_content or not new_author:
+                            st.error("모든 필드를 입력해주세요.")
+                        else:
+                            conn = get_db_connection()
+                            conn.execute(
+                                'UPDATE posts SET title = ?, content = ?, author = ? WHERE id = ?',
+                                (new_title, new_content, new_author, selected_post_data['id'])
+                            )
+                            conn.commit()
+                            conn.close()
+                            st.success("게시글이 수정되었습니다.")
+                            st.rerun()
+                
+                with col2:
+                    if st.form_submit_button("삭제"):
+                        conn = get_db_connection()
+                        conn.execute('DELETE FROM posts WHERE id = ?', (selected_post_data['id'],))
+                        conn.commit()
+                        conn.close()
+                        st.success("게시글이 삭제되었습니다.")
+                        st.rerun() 
